@@ -1,6 +1,7 @@
 //! Route operations
 use packet::route::{RouteCacheInfoPacket, RtMsgPacket, MutableIfInfoPacket, IfInfoPacket,
-                    RtAttrIterator, RtAttrPacket, MutableRtAttrPacket};
+                    RtAttrIterator, RtAttrPacket, MutableRtAttrPacket, MutableRtMsgPacket};
+
 use packet::netlink::NetlinkPacket;
 use packet::netlink::NetlinkMsgFlags;
 use packet::netlink::{NetlinkBufIterator, NetlinkReader, NetlinkRequestBuilder};
@@ -11,7 +12,7 @@ use pnet::packet::PacketSize;
 use util;
 
 use std::net::{Ipv4Addr, IpAddr};
-use std::io::{Read, Cursor};
+use std::io::{Read, Write, Cursor, self};
 use byteorder::{LittleEndian, BigEndian, ReadBytesExt, NativeEndian, ByteOrder};
 
 pub const RTM_NEWROUTE: u16 = 24;
@@ -19,12 +20,20 @@ pub const RTM_DELROUTE: u16 = 25;
 pub const RTM_GETROUTE: u16 = 26;
 
 // Reserved table identifiers
-pub const RT_TABLE_UNSPEC: u32 = 0;
+pub const RT_TABLE_UNSPEC: u8 = 0;
 // User defined values
-pub const RT_TABLE_COMPAT: u32 = 252;
-pub const RT_TABLE_DEFAULT: u32 = 253;
-pub const RT_TABLE_MAIN: u32 = 254;
-pub const RT_TABLE_LOCAL: u32 = 255;
+pub const RT_TABLE_COMPAT: u8 = 252;
+pub const RT_TABLE_DEFAULT: u8 = 253;
+pub const RT_TABLE_MAIN: u8 = 254;
+pub const RT_TABLE_LOCAL: u8 = 255;
+
+/* rtm_protocol */
+pub const RTPROT_UNSPEC:    u8 = 0;
+pub const RTPROT_REDIRECT:  u8 = 1;	/* Route installed by ICMP redirects not used by current IPv4 */
+pub const RTPROT_KERNEL:    u8 = 2;	/* Route installed by kernel		*/
+pub const RTPROT_BOOT:      u8 = 3;	/* Route installed during boot		*/
+pub const RTPROT_STATIC:    u8 = 4;	/* Route installed by administrator	*/
+
 
 #[repr(u8)]
 enum RtmType {
@@ -76,26 +85,144 @@ pub const RTA_MP_ALGO: u16 = 14; /* no longer used */
 pub const RTA_TABLE: u16 = 15;
 pub const RTA_MARK: u16 = 16;
 
+/// Address operations trait
+pub trait Routes where Self: Read + Write {
+    fn iter_routes<'a>(&'a mut self) -> io::Result<Box<Iterator<Item = Route> + 'a>>;
+    fn get_table_routes<'a, 'b>(&'a mut self, table_id: u8) -> io::Result<Box<Iterator<Item = Route> + 'a>>;
+}
+
+impl Routes for NetlinkConnection {
+    /// Iterate over routes
+    fn iter_routes<'a>(&'a mut self) -> io::Result<Box<Iterator<Item = Route> + 'a>> {
+        let req = NetlinkRequestBuilder::new(RTM_GETROUTE, NetlinkMsgFlags::NLM_F_DUMP)
+            .build();
+        let mut reply = self.send(req);
+        let iter = RoutesIterator { iter: reply.into_iter() };
+        Ok(Box::new(iter))
+    }
+
+    /// Iterate over routes related to `table`
+    fn get_table_routes<'a, 'b>(&'a mut self, table_id: u8) -> io::Result<Box<Iterator<Item = Route> + 'a>> {
+        let mut buf = vec![0; MutableRtMsgPacket::minimum_packet_size()];
+        let req = NetlinkRequestBuilder::new(RTM_GETROUTE, NetlinkMsgFlags::NLM_F_DUMP)
+            .append({
+                let mut rtmsg = MutableRtMsgPacket::new(&mut buf).unwrap();
+                rtmsg.set_rtm_table(table_id); // Not working, TODO: Figure out why
+                println!("/!\\ get_table_routes doesn't work properly");
+                rtmsg
+            })
+            .build();
+        let mut reply = self.send(req);
+        let iter = RoutesIterator { iter: reply.into_iter() };
+        Ok(Box::new(iter))
+    }
+
+}
+
 #[derive(Debug)]
 pub struct Route {
     packet: NetlinkPacket<'static>,
 }
 
 impl Route {
-    /// Iterate over routes
-    pub fn iter_routes(conn: &mut NetlinkConnection) -> RoutesIterator<&mut NetlinkConnection> {
-        let mut buf = vec![0; MutableIfInfoPacket::minimum_packet_size()];
-        let req = NetlinkRequestBuilder::new(RTM_GETROUTE, NetlinkMsgFlags::NLM_F_DUMP)
-            .append({
-                let mut ifinfo = MutableIfInfoPacket::new(&mut buf).unwrap();
-                ifinfo.set_family(0 /* AF_UNSPEC */);
-                ifinfo
-            })
-            .build();
-        let mut reply = conn.send(req);
-        RoutesIterator { iter: reply.into_iter() }
+
+    /// Get the table of the route
+    pub fn get_table(&self) -> Option<u32> {
+        let mut toReturn = None;
+        if let Some(rtm) = RtMsgPacket::new(&self.packet.payload()[0..]) {
+            let payload = &rtm.payload()[0..];
+            let iter = RtAttrIterator::new(payload);
+            for rta in iter {
+                if rta.get_rta_type() == RTA_TABLE {
+                    let mut cur = Cursor::new(rta.payload());
+                    toReturn = Some(cur.read_u32::<LittleEndian>().unwrap());
+                }
+            }
+        }
+        return toReturn;
     }
 
+    /// Get the route's outgoing interface
+    pub fn get_outgoing_interface(&self) -> Option<u32> {
+        let mut toReturn = None;
+        if let Some(rtm) = RtMsgPacket::new(&self.packet.payload()[0..]) {
+            let payload = &rtm.payload()[0..];
+            let iter = RtAttrIterator::new(payload);
+            for rta in iter {
+                if rta.get_rta_type() == RTA_OIF {
+                    let mut cur = Cursor::new(rta.payload());
+                    toReturn = Some(cur.read_u32::<LittleEndian>().unwrap());
+                }
+            }
+        }
+        return toReturn;
+    }
+
+    /// Get the route's priority/metric
+    pub fn get_metric(&self) -> Option<u32> {
+        let mut toReturn = None;
+        if let Some(rtm) = RtMsgPacket::new(&self.packet.payload()[0..]) {
+            let payload = &rtm.payload()[0..];
+            let iter = RtAttrIterator::new(payload);
+            for rta in iter {
+                if rta.get_rta_type() == RTA_PRIORITY {
+                    let mut cur = Cursor::new(rta.payload());
+                    toReturn = Some(cur.read_u32::<LittleEndian>().unwrap());
+                }
+            }
+        }
+        return toReturn;
+    }
+
+    /// Get the route's gateway
+    pub fn get_gateway(&self) -> Option<IpAddr> {
+        let mut toReturn = None;
+        if let Some(rtm) = RtMsgPacket::new(&self.packet.payload()[0..]) {
+            let payload = &rtm.payload()[0..];
+            let iter = RtAttrIterator::new(payload);
+            for rta in iter {
+                if rta.get_rta_type() == RTA_GATEWAY {
+                    let mut cur = Cursor::new(rta.payload());
+                    toReturn = Some(IpAddr::V4(Ipv4Addr::from(cur.read_u32::<BigEndian>().unwrap())));
+                }
+            }
+        }
+        return toReturn;
+    }
+
+    /// Get the route's source address (PREFSRC)
+    pub fn get_source(&self) -> Option<IpAddr> {
+        let mut toReturn = None;
+        if let Some(rtm) = RtMsgPacket::new(&self.packet.payload()[0..]) {
+            let payload = &rtm.payload()[0..];
+            let iter = RtAttrIterator::new(payload);
+            for rta in iter {
+                if rta.get_rta_type() == RTA_PREFSRC {
+                    let mut cur = Cursor::new(rta.payload());
+                    toReturn = Some(IpAddr::V4(Ipv4Addr::from(cur.read_u32::<BigEndian>().unwrap())));
+                }
+            }
+        }
+        return toReturn;
+    }
+
+    /// Get the route's destination
+    pub fn get_destination(&self) -> Option<IpAddr> {
+        let mut toReturn = None;
+        if let Some(rtm) = RtMsgPacket::new(&self.packet.payload()[0..]) {
+            let payload = &rtm.payload()[0..];
+            let iter = RtAttrIterator::new(payload);
+            for rta in iter {
+                if rta.get_rta_type() == RTA_DST {
+                    let mut cur = Cursor::new(rta.payload());
+                    toReturn = Some(IpAddr::V4(Ipv4Addr::from(cur.read_u32::<BigEndian>().unwrap())));
+                }
+            }
+        }
+        return toReturn;
+    }
+
+    
     fn dump_route(msg: NetlinkPacket) {
         use std::ffi::CStr;
         if msg.get_kind() != RTM_NEWROUTE {
@@ -174,7 +301,7 @@ impl<R: Read> Iterator for RoutesIterator<R> {
 #[test]
 fn dump_routes() {
     let mut conn = NetlinkConnection::new();
-    for route in Route::iter_routes(&mut conn) {
+    for route in conn.iter_routes().unwrap() {
         Route::dump_route(route.packet);
     }
 }

@@ -1,4 +1,12 @@
+#pnetlink
+
 pnetlink - native [NetLink](https://en.wikipedia.org/wiki/Netlink) library for rust using libpnet
+
+This fork adds, as of now:
+
+- Getters for Routes and their parameters in ```pnetlink::packet::netlink::NetlinkConnection``` and ```pnetlink::packet::route::route```
+
+- Getters for Rules and their parameters in ```pnetlink::packet::netlink::NetlinkConnection``` and ```pnetlink::packet::route::route```
 
 ## Building
 

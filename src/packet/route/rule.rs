@@ -13,7 +13,7 @@ use pnet::util::MacAddr;
 use libc;
 
 use std::net::Ipv4Addr;
-use std::io::{Read,Cursor,self};
+use std::io::{Read,Write,Cursor,self};
 use byteorder::{LittleEndian, BigEndian, ReadBytesExt};
 
 pub const RTM_NEWRULE: u16 = 32;
@@ -39,14 +39,15 @@ pub const FRA_TABLE: u16 = 15;      /* Extended table id */
 pub const FRA_FWMASK: u16 = 16;     /* mask for netfilter mark */
 pub const FRA_OIFNAME: u16 = 17;
 
-#[derive(Debug)]
-pub struct Rule {
-    packet: NetlinkPacket<'static>,
+
+
+pub trait Rules where Self: Read + Write {
+    fn iter_rules<'a>(&'a mut self) -> io::Result<Box<Iterator<Item = Rule> +'a>>;
 }
 
-impl Rule {
+impl Rules for NetlinkConnection {
     /// iterate over rules
-    pub fn iter_rules(conn: &mut NetlinkConnection) -> RulesIterator<&mut NetlinkConnection> {
+    fn iter_rules<'a>(&'a mut self) -> io::Result<Box<Iterator<Item = Rule> +'a>> {
         let mut buf = vec![0; MutableIfInfoPacket::minimum_packet_size()];
         let req = NetlinkRequestBuilder::new(RTM_GETRULE, NetlinkMsgFlags::NLM_F_DUMP)
             .append({
@@ -54,8 +55,50 @@ impl Rule {
                 ifinfo.set_family(0 /* AF_UNSPEC */);
                 ifinfo
             }).build();
-        let mut reply = conn.send(req);
-        RulesIterator { iter: reply.into_iter() }
+        let mut reply = self.send(req);
+        let iter = RulesIterator { iter: reply.into_iter() };
+        Ok(Box::new(iter))
+    }
+}
+
+
+#[derive(Debug)]
+pub struct Rule {
+    packet: NetlinkPacket<'static>,
+}
+
+impl Rule {
+    
+    /// Get the rule's priority
+    pub fn get_priority(&self) -> Option<u32> {
+        let mut toReturn = None;
+        if let Some(rtm) = FibRulePacket::new(&self.packet.payload()[0..]) {
+            let payload = &rtm.payload()[0..];
+            let iter = RtAttrIterator::new(payload);
+            for rta in iter {
+                if rta.get_rta_type() == FRA_PRIORITY {
+                    let mut cur = Cursor::new(rta.payload());
+                    toReturn = Some(cur.read_u32::<LittleEndian>().unwrap());
+                }
+            }
+        }
+        return toReturn;
+    }
+
+    /// Get the route's table
+    pub fn get_table(&self) -> Option<u32> {
+        let mut toReturn = None;
+        if let Some(rtm) = FibRulePacket::new(&self.packet.payload()[0..]) {
+            let payload = &rtm.payload()[0..];
+            let iter = RtAttrIterator::new(payload);
+            for rta in iter {
+                if rta.get_rta_type() == FRA_TABLE {
+                    let mut cur = Cursor::new(rta.payload());
+                    toReturn = Some(cur.read_u32::<LittleEndian>().unwrap());
+                }
+            }
+        }
+        return toReturn;
     }
 
     fn dump_rule(msg: NetlinkPacket) {
@@ -114,7 +157,7 @@ impl<R: Read> Iterator for RulesIterator<R> {
 #[test]
 fn dump_rules() {
     let mut conn = NetlinkConnection::new();
-    for rule in Rule::iter_rules(&mut conn) {
+    for rule in conn.iter_rules().unwrap() {
         Rule::dump_rule(rule.packet);
     }
 }

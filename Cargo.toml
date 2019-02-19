@@ -1,14 +1,16 @@
 [package]
 name = "pnetlink"
 version = "0.0.3"
-authors = ["Alexander Polakov <plhk@sdf.org>"]
+authors = [
+	"Alexander Polakov <plhk@sdf.org>",
+	"Álvaro López <alvarolopezborr@gmail.com>"]
 build = "build.rs"
 description = "Netlink library in pure rust"
-repository = "https://github.com/polachok/pnetlink"
+repository = "https://github.com/alborrajo/pnetlink"
 readme = "README.md"
 keywords = ["netlink", "pnet", "linux", "network"]
 license = "MIT"
-documentation = "https://docs.rs/pnetlink/"
+documentation = "cargo doc"
 
 [dependencies]
 rand = "0.4"
