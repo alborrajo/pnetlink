@@ -1,12 +1,7 @@
-use packet::netlink::{MutableNetlinkPacket,NetlinkPacket};
 use packet::netlink::NetlinkMsgFlags;
-use packet::netlink::{NetlinkBufIterator,NetlinkReader,NetlinkRequestBuilder};
-use ::socket::{NetlinkSocket,NetlinkProtocol};
+use packet::netlink::{NetlinkReader,NetlinkRequestBuilder};
 use packet::netlink::NetlinkConnection;
-use pnet::packet::MutablePacket;
 use pnet::packet::Packet;
-use pnet::packet::PacketSize;
-use libc;
 use std::io::{Read,Write};
 
 include!(concat!(env!("OUT_DIR"), "/audit/audit.rs"));

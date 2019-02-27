@@ -1,18 +1,14 @@
 //! Address operations
-use packet::route::{IfAddrCacheInfoPacket,MutableIfInfoPacket,IfAddrPacket,MutableIfAddrPacket,RtAttrIterator,RtAttrPacket,MutableRtAttrPacket,RtAttrMtuPacket};
+use packet::route::{IfAddrCacheInfoPacket,MutableIfInfoPacket,IfAddrPacket,MutableIfAddrPacket,RtAttrIterator,RtAttrPacket,MutableRtAttrPacket};
 use packet::route::link::Link;
-use packet::netlink::{MutableNetlinkPacket,NetlinkPacket,NetlinkErrorPacket};
+use packet::netlink::NetlinkPacket;
 use packet::netlink::NetlinkMsgFlags;
 use packet::netlink::{NetlinkBufIterator,NetlinkReader,NetlinkRequestBuilder};
-use socket::{NetlinkSocket,NetlinkProtocol};
 use packet::netlink::NetlinkConnection;
 use pnet::packet::MutablePacket;
 use pnet::packet::Packet;
-use pnet::packet::PacketSize;
-use pnet::util::MacAddr;
-use libc;
 use std::io::{Read,Write,Cursor,self};
-use byteorder::{LittleEndian, BigEndian, ReadBytesExt};
+use byteorder::{BigEndian, ReadBytesExt};
 use std::net::{Ipv4Addr,Ipv6Addr, IpAddr};
 
 pub const RTM_NEWADDR: u16 = 20;
@@ -159,7 +155,8 @@ impl Addresses for NetlinkConnection {
                 let mut ifinfo = MutableIfInfoPacket::new(&mut buf).unwrap();
                 ifinfo.set_family(family.unwrap_or(0));
                 ifinfo
-            }).build();
+            })
+            .build();
         try!(self.write(req.packet()));
         let reader = NetlinkReader::new(self);
         let iter = AddrsIterator { iter: reader.into_iter() };

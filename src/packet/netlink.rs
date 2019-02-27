@@ -1,10 +1,8 @@
 //! Netlink packet handling
 use ::socket::{NetlinkSocket,NetlinkProtocol};
-use libc;
 use std::io;
-use std::io::{Read,BufRead,BufReader,Write};
-use std::marker::PhantomData;
-use pnet::packet::{Packet,PacketSize,FromPacket};
+use std::io::Read;
+use pnet::packet::{Packet,PacketSize};
 
 include!(concat!(env!("OUT_DIR"), "/netlink.rs"));
 

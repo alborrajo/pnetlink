@@ -1,6 +1,7 @@
 //! Rules operations
-use packet::route::{FibRulePacket,MutableRtMsgPacket,MutableIfInfoPacket,RtAttrIterator,RtAttrPacket,MutableRtAttrPacket};
+use packet::route::{FibRulePacket,MutableIfInfoPacket,RtAttrIterator};
 use packet::route::link::Link;
+use packet::route::route;
 use packet::netlink::{MutableNetlinkPacket,NetlinkPacket,NetlinkErrorPacket};
 use packet::netlink::NetlinkMsgFlags;
 use packet::netlink::{NetlinkBufIterator,NetlinkReader,NetlinkRequestBuilder};
@@ -38,11 +39,20 @@ pub const FRA_SUPPRESS_PREFIXLEN: u16 = 14;
 pub const FRA_TABLE: u16 = 15;      /* Extended table id */
 pub const FRA_FWMASK: u16 = 16;     /* mask for netfilter mark */
 pub const FRA_OIFNAME: u16 = 17;
+pub const FRA_PAD: u16 = 18;
+pub const FRA_L3MDEV: u16 = 19;
+pub const FRA_UID_RANGE: u16 = 20;
+pub const FRA_PROTOCOL: u16 = 21;  
+pub const FRA_IP_PROTO: u16 = 22;
+pub const FRA_SPORT_RANGE: u16 = 23;
+pub const FRA_DPORT_RANGE: u16 = 24;
+pub const __FRA_MAX: u16 = 25;
 
 
 
 pub trait Rules where Self: Read + Write {
     fn iter_rules<'a>(&'a mut self) -> io::Result<Box<Iterator<Item = Rule> +'a>>;
+    fn get_table_rules<'a>(&'a mut self, table_id: u8) -> io::Result<Box<Iterator<Item = Rule> +'a>>;
 }
 
 impl Rules for NetlinkConnection {
@@ -58,6 +68,20 @@ impl Rules for NetlinkConnection {
         let mut reply = self.send(req);
         let iter = RulesIterator { iter: reply.into_iter() };
         Ok(Box::new(iter))
+    }
+
+    /// iterate over rules
+    fn get_table_rules<'a>(&'a mut self, table_id: u8) -> io::Result<Box<Iterator<Item = Rule> +'a>> {
+        let mut buf = vec![0; MutableIfInfoPacket::minimum_packet_size()];
+        let req = NetlinkRequestBuilder::new(RTM_GETRULE, NetlinkMsgFlags::NLM_F_DUMP)
+            .append({
+                let mut ifinfo = MutableIfInfoPacket::new(&mut buf).unwrap();
+                ifinfo.set_family(0 /* AF_UNSPEC */);
+                ifinfo
+            }).build();
+        let mut reply = self.send(req);
+        let iter = RulesIterator { iter: reply.into_iter() };
+        Ok(Box::new(iter.filter(move |rule| rule.get_table().unwrap() == table_id.into())))
     }
 }
 
@@ -101,6 +125,74 @@ impl Rule {
         return toReturn;
     }
 
+    /// Get the route's out interface name
+    pub fn get_outgoing_interface_name(&self) -> Option<String> {
+        let mut toReturn = None;
+        if let Some(rtm) = FibRulePacket::new(&self.packet.payload()[0..]) {
+            let payload = &rtm.payload()[0..];
+            let iter = RtAttrIterator::new(payload);
+            for rta in iter {
+                if rta.get_rta_type() == FRA_OIFNAME {
+                    toReturn = Some(String::from_utf8(Vec::from(rta.payload())).unwrap());
+                }
+            }
+        }
+        return toReturn;
+    }
+
+    /// Get the route's in interface name
+    pub fn get_ingoing_interface_name(&self) -> Option<String> {
+        let mut toReturn = None;
+        if let Some(rtm) = FibRulePacket::new(&self.packet.payload()[0..]) {
+            let payload = &rtm.payload()[0..];
+            let iter = RtAttrIterator::new(payload);
+            for rta in iter {
+                if rta.get_rta_type() == FRA_IFNAME {
+                    toReturn = Some(String::from_utf8(Vec::from(rta.payload())).unwrap());
+                }
+            }
+        }
+        return toReturn;
+    }
+
+    /// Get the route's source port range
+    pub fn get_source_port_range(&self) -> Option<[u16; 2]> {
+        let mut toReturn = None;
+        if let Some(rtm) = FibRulePacket::new(&self.packet.payload()[0..]) {
+            let payload = &rtm.payload()[0..];
+            let iter = RtAttrIterator::new(payload);
+            for rta in iter {
+                if rta.get_rta_type() == FRA_SPORT_RANGE {
+                    let mut cur = Cursor::new(rta.payload());
+                    let port1 = cur.read_u16::<LittleEndian>().unwrap();
+                    let port2 = cur.read_u16::<LittleEndian>().unwrap();
+                    toReturn = Some([port1, port2]);
+                }
+            }
+        }
+        return toReturn;
+    }
+
+    /// Get the route's source port range
+    pub fn get_destination_port_range(&self) -> Option<[u16; 2]> {
+        let mut toReturn = None;
+        if let Some(rtm) = FibRulePacket::new(&self.packet.payload()[0..]) {
+            let payload = &rtm.payload()[0..];
+            let iter = RtAttrIterator::new(payload);
+            for rta in iter {
+                if rta.get_rta_type() == FRA_DPORT_RANGE {
+                    let mut cur = Cursor::new(rta.payload());
+                    let port1 = cur.read_u16::<LittleEndian>().unwrap();
+                    let port2 = cur.read_u16::<LittleEndian>().unwrap();
+                    toReturn = Some([port1, port2]);
+                }
+            }
+        }
+        return toReturn;
+    }
+
+
+
     fn dump_rule(msg: NetlinkPacket) {
         use std::ffi::CStr;
         if msg.get_kind() != RTM_NEWRULE {
@@ -126,7 +218,11 @@ impl Rule {
                         let table = cur.read_u32::<LittleEndian>().unwrap();
                         println!(" ├ TABLE: {:?}", table);
                     },
-                    _ => println!(" ├ {:?}", rta),
+                    _ => {
+                        let rta_values = [ "FRA_UNSPEC", "FRA_DST", "FRA_SRC", "FRA_IFNAME", "FRA_GOTO", "FRA_UNUSED2", "FRA_PRIORITY", "FRA_UNUSED3", "FRA_UNUSED4", "FRA_UNUSED5", "FRA_FWMARK", "FRA_FLOW", "FRA_TUN_ID", "FRA_SUPPRESS_IFGROUP", "FRA_SUPPRESS_PREFIXLEN", "FRA_TABLE", "FRA_FWMASK", "FRA_OIFNAME", "FRA_PAD", "FRA_L3MDEV", "FRA_UID_RANGE", "FRA_PROTOCOL", "FRA_IP_PROTO", "FRA_SPORT_RANGE", "FRA_DPORT_RANGE", "__FRA_MAX" ];
+                        let index: usize = rta.get_rta_type() as usize;
+                        println!(" ├ {} ({})\t{:x?}", rta_values[index], rta.get_rta_type(), rta.payload());
+                    }
                 }
             }
         }

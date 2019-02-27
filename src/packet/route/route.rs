@@ -106,15 +106,16 @@ impl Routes for NetlinkConnection {
         let mut buf = vec![0; MutableRtMsgPacket::minimum_packet_size()];
         let req = NetlinkRequestBuilder::new(RTM_GETROUTE, NetlinkMsgFlags::NLM_F_DUMP)
             .append({
-                let mut rtmsg = MutableRtMsgPacket::new(&mut buf).unwrap();
-                rtmsg.set_rtm_table(table_id); // Not working, TODO: Figure out why
-                println!("/!\\ get_table_routes doesn't work properly");
-                rtmsg
+                {
+                    let mut rtmsg = MutableRtMsgPacket::new(&mut buf).unwrap();
+                    rtmsg.set_rtm_table(table_id); // Not working, TODO: Figure out why
+                }
+                RtMsgPacket::new(&mut buf).unwrap()
             })
             .build();
         let mut reply = self.send(req);
         let iter = RoutesIterator { iter: reply.into_iter() };
-        Ok(Box::new(iter))
+        Ok(Box::new(iter.filter(move |route| route.get_table().unwrap() == table_id.into())))
     }
 
 }
